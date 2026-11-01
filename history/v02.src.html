@@ -1,0 +1,358 @@
+<title>Paint Pour</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@500;600&display=swap">
+<style>
+/* Layout: white canvas, photo centred, a single pour button under it; paint is drawn by one full-screen WebGL pass */
+:root {
+  --paper: #fafaf8;
+  --ink: #111114;
+  --on-ink: #fafaf8;
+  --paint: #1440f0;
+  --focus: #1440f0;
+  --ui: "Onest", "Helvetica Neue", Arial, sans-serif;
+  color-scheme: light;
+}
+html, body { height: 100%; }
+[hidden] { display: none !important; }
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--ui);
+  overflow: hidden;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+#gl { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+.pour {
+  position: fixed;
+  left: 50%;
+  top: 0;
+  transform: translate(-50%, 0);
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 52px;
+  padding: 0 24px 0 18px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--ink);
+  color: var(--on-ink);
+  font: 600 16px/1 var(--ui);
+  letter-spacing: -0.005em;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: transform .18s cubic-bezier(.3,1.6,.5,1), opacity .3s;
+}
+.pour:hover { transform: translate(-50%, -2px); }
+.pour:active, .pour.kick { transform: translate(-50%, 2px) scale(.94); }
+.pour:disabled { cursor: default; }
+.pour:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.pour .drop {
+  width: 14px; height: 14px;
+  background: var(--paint);
+  border-radius: 50% 50% 50% 0;
+  transform: rotate(-45deg);
+}
+.fallback { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; color: var(--ink); }
+</style>
+
+<canvas id="gl" aria-label="Фотография, на которую выплёскивают краску, и она становится цветной"></canvas>
+<button class="pour" id="pour" type="button"><span class="drop" aria-hidden="true"></span><span id="label">Залить краской</span></button>
+<div class="fallback" id="fallback" hidden>Этому браузеру не хватает WebGL2, поэтому эффект не запустится.</div>
+
+<script id="vs" type="x-shader/x-vertex">#version 300 es
+in vec2 aPos;
+void main(){ gl_Position = vec4(aPos, 0., 1.); }
+</script>
+<script id="fs" type="x-shader/x-fragment">#version 300 es
+precision highp float;
+out vec4 outColor;
+uniform sampler2D uImg;
+uniform vec2  uCenter;   // photo centre, device px (GL origin)
+uniform float uPH;       // photo height, device px
+uniform float uAsp;      // photo width / height
+uniform vec2  uBtn;      // button centre, photo units
+uniform vec2  uHit;      // impact point, photo units
+uniform float uT;        // seconds since the throw, < 0 before
+uniform float uFly;      // flight time
+uniform float uDrain;    // 0..1 washes everything off
+uniform float uSeed;
+uniform float uGrain;
+
+const vec3 LW = vec3(.2126, .7152, .0722);
+const vec3 PAINT = vec3(.06, .22, .96);
+
+float hash(vec2 p){ p = fract(p*vec2(123.34, 456.21)); p += dot(p, p+45.32); return fract(p.x*p.y); }
+float noise(vec2 p){
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f*f*(3.-2.*f);
+  return mix(mix(hash(i), hash(i+vec2(1,0)), u.x), mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), u.x), u.y);
+}
+float fbm(vec2 p){ float v = 0., a = .5; for (int i=0; i<4; i++){ v += a*noise(p); p = p*2.03 + 17.1; a *= .5; } return v; }
+float smax(float a, float b, float k){ float h = max(k-abs(a-b), 0.)/k; return max(a,b) + h*h*k*.25; }
+float sdBox(vec2 p, vec2 b){ vec2 d = abs(p)-b; return length(max(d, 0.)) + min(max(d.x, d.y), 0.); }
+
+vec2 flyPos(float t){
+  float k = clamp(t/uFly, 0., 1.);
+  float e = 1. - pow(1.-k, 1.6);
+  vec2 p = mix(uBtn, uHit, e);
+  p.x += sin(k*3.14159)*.035*sign(uHit.x + .001);
+  return p;
+}
+
+void main(){
+  vec2 q = (gl_FragCoord.xy - uCenter)/uPH;
+  vec2 half_ = vec2(uAsp*.5, .5);
+  float px = 1./uPH;
+  float tau = uT - uFly;
+
+  // ---- 1. the thrown blob: a liquid tadpole with loose droplets ----
+  float P = -1.;
+  if (uT > 0. && tau < .12){
+    float shrink = 1. - smoothstep(0., .1, tau);
+    for (int i=0; i<14; i++){
+      float fi = float(i);
+      float ti = uT - fi*.014;
+      if (ti < 0.) break;
+      vec2 c = flyPos(min(ti, uFly));
+      float r = .056*pow(1. - fi/14., .9)*shrink*smoothstep(0., .06, ti);
+      P = smax(P, r - length(q-c), .04);
+    }
+    for (int j=0; j<7; j++){
+      float fj = float(j);
+      float tj = uT - .05 - .04*fj;
+      if (tj < 0.) continue;
+      vec2 c = flyPos(min(tj, uFly));
+      c.x += (hash(vec2(fj, uSeed)) - .5)*.09;
+      float r = (.005 + .009*hash(vec2(uSeed, fj)))*shrink;
+      P = max(P, r - length(q-c));
+    }
+  }
+
+  // ---- 2. impact: splat, crown spikes, viscous flood ----
+  float fBody = -1., R = 0.;
+  if (tau > 0.){
+    vec2 d = q - uHit;
+    float dist = length(d);
+    vec2 dir = d/(dist + 1e-4);
+    float splat = .12*(1. - exp(-tau*26.));
+    float flow  = 1.05*(1. - pow(1. - clamp(tau/2.9, 0., 1.), 1.8));
+    float fill  = smoothstep(2.2, 3.3, tau)*.7;
+    R = splat + flow + fill;
+    float amp = min(R, .32);
+    float lobes   = fbm(dir*1.8 + uSeed) - .5;
+    float fingers = fbm(dir*5.5 + uSeed*2.) - .5;
+    float spikes  = pow(noise(dir*7. + uSeed*3.), 5.)*.32*(1. - exp(-tau*22.));
+    float wob = fbm(q*6. + uSeed) - .5;
+    fBody = R - dist + amp*(.85*lobes + .25*fingers) + spikes + .025*wob;
+  }
+  fBody -= uDrain*2.4;
+
+  // flood stays on the photo, bleeding a hair past its edge
+  float edge = -sdBox(q, half_) + .005 + .007*(fbm(q*28. + uSeed) - .5);
+  P = smax(P, min(fBody, edge), .01);
+
+  if (tau > 0.){
+    // flung droplets: teardrops pointing away from the impact, many land on the paper
+    for (int j=0; j<30; j++){
+      float fj = float(j);
+      float h1 = hash(vec2(fj, uSeed + 1.)), h2 = hash(vec2(uSeed + 2., fj)), h3 = hash(vec2(fj*1.7, uSeed + 3.));
+      float a = h1*6.2832;
+      vec2 dv = vec2(cos(a), sin(a));
+      float D = .1 + .66*pow(h2, 1.2);
+      vec2 c = uHit + dv*D*(1. - exp(-tau*(8. + 7.*h3)));
+      float r = (.003 + .015*h3*h3)*smoothstep(0., .04, tau);
+      vec2 rel = q - c;
+      float along = dot(rel, dv), across = dot(rel, vec2(-dv.y, dv.x));
+      float drop = r - length(vec2(along/(1. + 1.1*h2), across));
+      drop = smax(drop, r*.45 - length(q - (c - dv*r*2.6)), r*.9);
+      P = max(P, drop);
+    }
+    // drips running off the bottom edge
+    for (int j=0; j<6; j++){
+      float fj = float(j);
+      float x = (hash(vec2(fj, uSeed + 5.)) - .5)*uAsp*.88;
+      float w = .7 + .6*hash(vec2(uSeed + 6., fj));
+      vec2 top = vec2(x, -.5 + .012);
+      float reach = R - length(top - uHit) - .08 - uDrain*2.4;     // has the flood reached this spot yet
+      float L = (.025 + .085*hash(vec2(fj*2.3, uSeed + 7.)))*smoothstep(0., .7, reach);
+      float h = clamp((top.y - q.y)/max(L, 1e-3), 0., 1.);
+      vec2 c = vec2(x + .006*sin(h*3. + fj)*h, top.y - h*L);
+      float fd = mix(.003, .0055, h)*w - length(q - c);
+      fd = smax(fd, .0085*w*smoothstep(0., .02, L) - length(q - vec2(x + .006*sin(3. + fj), top.y - L)), .006);
+      if (L > .001) P = smax(P, fd, .008);
+    }
+  }
+  P -= uDrain*1.6;
+
+  // ---- shading ----
+  float cov = smoothstep(-px, px, P);
+  float inPhoto = smoothstep(px, -px, sdBox(q, half_));
+  float reveal = smoothstep(0., .17, fBody);
+  float hgt = smoothstep(-px, .012, P)*(1. - .88*reveal*inPhoto);
+  vec2 g = vec2(dFdx(hgt), dFdy(hgt))*(uPH*.012);
+  vec3 n = normalize(vec3(-g*1.5, 1.));
+  vec3 ld = normalize(vec3(-.45, .65, .62));
+
+  vec2 uv = clamp(vec2(q.x/uAsp + .5, q.y + .5) - g*.004*inPhoto, 0., 1.);
+  vec3 col = texture(uImg, uv).rgb;
+  float L = dot(col, LW);
+
+  // before: a pale silver negative of the shot
+  vec3 neg = 1. - col;
+  float nL = dot(neg, LW);
+  vec3 before = mix(vec3(nL), neg, .12)*vec3(.985, .985, .975);
+  before = mix(before, vec3(1.), .08);
+
+  // after: the shot pushed a little richer
+  vec3 viv = mix(vec3(L), col, 1.28);
+  viv = clamp((viv - .5)*1.06 + .51, 0., 1.);
+
+  float grain = (hash(gl_FragCoord.xy + uGrain) - .5);
+  vec3 paper = vec3(.98, .98, .972) + grain*.01;
+  vec3 base = mix(paper, before + grain*.035, inPhoto);
+
+  vec3 pc = PAINT*(.82 + .35*fbm(q*3. + uSeed));
+  pc *= mix(1., .62, exp(-max(P, 0.)/.004));                 // pooled, darker rim
+  vec3 onPhoto = mix(pc*(.3 + .95*dot(viv, LW)) + viv*.08, viv, reveal);
+  vec3 paint = mix(pc, onPhoto, inPhoto);
+  float dif = .9 + .28*dot(n, ld);
+  float wet = mix(1., 1. - reveal, inPhoto);
+  float spec = pow(max(dot(reflect(-ld, n), vec3(0, 0, 1)), 0.), 28.)*.85*wet;
+  paint = paint*mix(1., dif, wet) + spec;
+
+  outColor = vec4(mix(base, paint, cov), 1.);
+}
+</script>
+
+<script>
+(() => {
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const SPEED = reduced ? 2.5 : 1;
+  const FLY = 0.42;
+  const DONE = 3.6;
+
+  const canvas = document.getElementById('gl');
+  const btn = document.getElementById('pour');
+  const label = document.getElementById('label');
+
+  const gl = canvas.getContext('webgl2', { antialias: false });
+  if (!gl) { document.getElementById('fallback').hidden = false; btn.hidden = true; return; }
+
+  const sh = (type, src) => {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src.trim());
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    return s;
+  };
+  const prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, document.getElementById('vs').textContent));
+  gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, document.getElementById('fs').textContent));
+  gl.linkProgram(prog);
+  gl.useProgram(prog);
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+  const aPos = gl.getAttribLocation(prog, 'aPos');
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+  const U = {};
+  ['uImg','uCenter','uPH','uAsp','uBtn','uHit','uT','uFly','uDrain','uSeed','uGrain'].forEach(n => U[n] = gl.getUniformLocation(prog, n));
+
+  let asp = 1200 / 1630;
+  const tex = gl.createTexture();
+  const img = new Image();
+  img.onload = () => {
+    asp = img.naturalWidth / img.naturalHeight;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, img);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    layout();
+  };
+  img.src = 'data:image/jpeg;base64,__IMG__';
+
+  // ---- layout: photo centred, button 32px under it ----
+  const GAP = 32, BTN_H = 52;
+  let L = { cx: 0, cy: 0, h: 1, btnY: 0 };
+  function layout() {
+    const vw = innerWidth, vh = innerHeight;
+    const pad = Math.max(24, vh * 0.05);
+    let h = Math.min(vh - pad * 2 - GAP - BTN_H, 900);
+    if (h * asp > vw - 32) h = (vw - 32) / asp;
+    h = Math.max(h, 120);
+    const top = (vh - (h + GAP + BTN_H)) / 2;
+    L = { cx: vw / 2, cy: top + h / 2, h, btnY: top + h + GAP + BTN_H / 2 };
+    btn.style.top = (L.btnY - BTN_H / 2) + 'px';
+    const dpr = Math.min(devicePixelRatio || 1, 2);
+    canvas.width = Math.round(vw * dpr);
+    canvas.height = Math.round(vh * dpr);
+  }
+  addEventListener('resize', layout);
+  layout();
+
+  // ---- state ----
+  const clock = () => performance.now() / 1000;
+  let start = null;          // time of the throw
+  let drainFrom = null;
+  let seed = 3.7, hit = [0.03, -0.06];
+
+  function throwPaint() {
+    seed = Math.random() * 40 + 1;
+    hit = [(Math.random() - 0.5) * 0.16, -0.04 + (Math.random() - 0.5) * 0.12];
+    start = clock();
+    btn.disabled = true;
+    btn.classList.add('kick');
+    setTimeout(() => btn.classList.remove('kick'), 160);
+  }
+  btn.addEventListener('click', () => {
+    if (start === null) return throwPaint();
+    drainFrom = clock();
+    btn.disabled = true;
+  });
+
+  function frame() {
+    const now = clock();
+    let t = start === null ? -1 : (now - start) * SPEED;
+    let drain = 0;
+    if (drainFrom !== null) {
+      const k = Math.min(1, (now - drainFrom) / (reduced ? 0.4 : 0.9));
+      drain = k * k * (3 - 2 * k);
+      if (k >= 1) { drainFrom = null; drain = 0; throwPaint(); t = 0; }
+    }
+    if (start !== null && drainFrom === null && t > DONE && btn.disabled) {
+      btn.disabled = false;
+      label.textContent = 'Ещё раз';
+    }
+
+    const dpr = canvas.width / innerWidth;
+    // a short jolt on impact
+    const tau = t - FLY;
+    const jolt = !reduced && tau > 0 ? Math.exp(-tau * 16) * Math.sin(tau * 75) * 4 : 0;
+    const btnY = -(L.btnY - L.cy) / L.h;
+
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.uniform1i(U.uImg, 0);
+    gl.uniform2f(U.uCenter, L.cx * dpr, (innerHeight - L.cy + jolt) * dpr);
+    gl.uniform1f(U.uPH, L.h * dpr);
+    gl.uniform1f(U.uAsp, asp);
+    gl.uniform2f(U.uBtn, 0, btnY);
+    gl.uniform2f(U.uHit, hit[0], hit[1]);
+    gl.uniform1f(U.uT, t);
+    gl.uniform1f(U.uFly, FLY);
+    gl.uniform1f(U.uDrain, drain);
+    gl.uniform1f(U.uSeed, seed);
+    gl.uniform1f(U.uGrain, Math.floor(now * 24) % 97);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>

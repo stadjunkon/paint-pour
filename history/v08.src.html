@@ -1,0 +1,562 @@
+<title>Paint Pour</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@500;600&display=swap">
+<style>
+/* Layout: one app screen (390x844 phone frame on desktop, full screen on a phone): status bar, photo card, primary button */
+:root {
+  --page: #08090c;
+  --screen: #0e0f13;
+  --bezel: #1b1c21;
+  --bezel-edge: #2c2d33;
+  --text: #f4f4f6;
+  --btn: #f4f4f6;
+  --btn-text: #0e0f13;
+  --focus: #6e8bff;
+  --ui: "Onest", -apple-system, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+[hidden] { display: none !important; }
+body {
+  background: var(--page);
+  color: var(--text);
+  font-family: var(--ui);
+  overflow: hidden;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.device {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  width: 390px;
+  height: 844px;
+  transform-origin: 50% 50%;
+  border-radius: 56px;
+  overflow: hidden;
+  background: var(--screen);
+  box-shadow: 0 0 0 11px var(--bezel), 0 0 0 12px var(--bezel-edge), 0 40px 120px rgba(0, 0, 0, .6);
+}
+#gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.status {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 54px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 34px 0 46px;
+  font: 600 16px/1 var(--ui);
+  letter-spacing: -0.01em;
+  pointer-events: none;
+}
+.island {
+  position: absolute;
+  top: 11px;
+  left: 50%;
+  width: 124px;
+  height: 36px;
+  margin-left: -62px;
+  border-radius: 20px;
+  background: #000;
+}
+.status svg { display: block; fill: var(--text); }
+.status .icons { display: flex; gap: 6px; align-items: center; }
+.home {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  width: 134px;
+  height: 5px;
+  margin-left: -67px;
+  border-radius: 3px;
+  background: var(--text);
+  opacity: .85;
+  pointer-events: none;
+}
+.pour {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  height: 56px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--btn);
+  color: var(--btn-text);
+  font: 600 17px/1 var(--ui);
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  transition: transform .18s cubic-bezier(.3,1.6,.5,1), opacity .3s;
+}
+.pour:active, .pour.kick { transform: scale(.96); }
+.pour:disabled { cursor: default; }
+.pour:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+/* on an actual phone the app takes the whole screen and the OS draws its own status bar */
+body.mobile .device { left: 0; top: 0; border-radius: 0; box-shadow: none; }
+body.mobile .status, body.mobile .home { display: none; }
+.fallback { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; }
+</style>
+
+<div class="device" id="device">
+  <canvas id="gl" aria-label="Photo that turns from negative to full colour as liquid paint spreads over it"></canvas>
+  <div class="status" aria-hidden="true">
+    <span>9:41</span>
+    <span class="island"></span>
+    <span class="icons">
+      <svg width="18" height="12" viewBox="0 0 18 12"><rect x="0" y="8" width="3" height="4" rx="1"/><rect x="5" y="5.5" width="3" height="6.5" rx="1"/><rect x="10" y="3" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="12" rx="1"/></svg>
+      <svg width="16" height="12" viewBox="0 0 16 12"><path d="M8 2.6c2.3 0 4.4.9 6 2.4l1.3-1.3A10.4 10.4 0 0 0 8 .8 10.4 10.4 0 0 0 .7 3.7L2 5c1.6-1.5 3.7-2.4 6-2.4Zm0 3.5c1.3 0 2.5.5 3.4 1.3l1.3-1.3A6.6 6.6 0 0 0 8 4.3a6.6 6.6 0 0 0-4.7 1.8l1.3 1.3C5.5 6.6 6.7 6.1 8 6.1Zm0 3.4c-.5 0-1 .2-1.3.5L8 11.3 9.3 10c-.3-.3-.8-.5-1.3-.5Z"/></svg>
+      <svg width="27" height="13" viewBox="0 0 27 13"><rect x=".5" y=".5" width="23" height="12" rx="3.8" fill="none" stroke="currentColor" stroke-opacity=".4" style="stroke:var(--text)"/><rect x="2" y="2" width="20" height="9" rx="2.4"/><rect x="25" y="4.5" width="1.6" height="4" rx=".8" opacity=".4"/></svg>
+    </span>
+  </div>
+  <button class="pour" id="pour" type="button">Bring to life</button>
+  <div class="home" aria-hidden="true"></div>
+  <div class="fallback" id="fallback" hidden>This browser lacks WebGL2, so the effect can’t run.</div>
+</div>
+
+<script id="vs" type="x-shader/x-vertex">#version 300 es
+in vec2 aPos;
+void main(){ gl_Position = vec4(aPos, 0., 1.); }
+</script>
+<script id="fs" type="x-shader/x-fragment">#version 300 es
+precision highp float;
+out vec4 outColor;
+uniform sampler2D uImg;
+uniform vec2  uCenter;   // photo centre, device px (GL origin)
+uniform float uPH;       // photo height, device px
+uniform float uAsp;      // photo width / height
+uniform float uRad;      // corner radius, photo units
+uniform vec2  uBtn;      // button centre, photo units
+uniform vec2  uHit;      // impact point, photo units
+uniform float uT;        // seconds since the throw, < 0 before
+uniform float uFly;      // flight time
+uniform float uDrain;    // 0..1 pulls the liquid back
+uniform float uSeed;
+uniform float uGrain;
+uniform float uImgAsp;   // image width / height
+uniform float uFocusX;   // horizontal crop focus, 0..1
+uniform vec3  uBg;       // screen background
+uniform float uShed;     // 1 while the paint is being shaken off
+uniform float uShedS;    // how far the film has travelled
+uniform float uShedTh;   // dewetting threshold: the film breaks into beads as it rises
+uniform vec2  uShedDir;  // direction the paint is flung
+uniform vec2  uSlosh;    // paint lagging behind the shaking phone, photo units
+
+const vec3 LW = vec3(.2126, .7152, .0722);
+const vec3 PAINT = vec3(.08, .62, .9);
+const vec3 L1 = normalize(vec3(-.5, .7, .55));
+const vec3 L2 = normalize(vec3(.6, -.5, .6));
+
+float hash(vec2 p){ p = fract(p*vec2(123.34, 456.21)); p += dot(p, p+45.32); return fract(p.x*p.y); }
+float noise(vec2 p){
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f*f*(3.-2.*f);
+  return mix(mix(hash(i), hash(i+vec2(1,0)), u.x), mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), u.x), u.y);
+}
+float fbm(vec2 p){ float v = 0., a = .5; for (int i=0; i<4; i++){ v += a*noise(p); p = p*2.03 + 17.1; a *= .5; } return v; }
+float soft(vec2 p){ return .66*noise(p) + .34*noise(p*2.03 + 17.1); }
+float smax(float a, float b, float k){ float h = max(k-abs(a-b), 0.)/k; return max(a,b) + h*h*k*.25; }
+float sdRound(vec2 p, vec2 b, float r){ vec2 d = abs(p) - b + r; return length(max(d, 0.)) + min(max(d.x, d.y), 0.) - r; }
+
+// cover-fit the image into the card, cropping around uFocusX
+vec2 toUV(vec2 q){
+  vec2 uv;
+  if (uAsp > uImgAsp) uv = vec2(q.x/uAsp + .5, q.y*uImgAsp/uAsp + .5);
+  else { float hw = .5*uAsp/uImgAsp; uv = vec2(q.x/uImgAsp + clamp(uFocusX, hw, 1. - hw), q.y + .5); }
+  return clamp(uv, 0., 1.);
+}
+
+vec3 vivid(vec3 c){
+  float l = dot(c, LW);
+  return clamp((mix(vec3(l), c, 1.28) - .5)*1.06 + .51, 0., 1.);
+}
+vec3 negative(vec3 c){
+  vec3 n = 1. - c;
+  return vec3(dot(n, LW))*vec3(.9, .905, .92);
+}
+
+// ---- the flood: a smooth, slowly morphing liquid front ----
+float body(vec2 q, float R, float amp, float tau){
+  vec2 d = q - uHit;
+  float dist = sqrt(dot(d, d) + .0016);   // softened so the impact point has no pinch
+  vec2 dir = d/dist;
+  float lobes   = soft(dir*1.5 + uSeed + tau*.12) - .5;
+  float fingers = noise(dir*3.2 + uSeed*2. - tau*.18) - .5;
+  float wob     = noise(q*2.5 + uSeed + tau*.1) - .5;
+  float ang = smoothstep(.02, .3, dist);   // shape the rim, keep the centre a smooth dome
+  return R - dist + amp*ang*(.8*lobes + .12*fingers) + .015*wob - uDrain*2.4;
+}
+// lens thickness: a rounded lip right at the front that thins out behind it
+float lip(float F){ return smoothstep(0., .045, F)*exp(-max(F - .045, 0.)/.13); }
+
+// ---- the thrown drop: a glass bead that stretches with speed and jiggles ----
+vec2 flyPos(float t){
+  float k = clamp(t/uFly, 0., 1.);
+  vec2 p = mix(uBtn, uHit, 1. - pow(1.-k, 2.));
+  p.x += sin(k*3.14159)*.05*sign(uHit.x + .001);
+  return p;
+}
+// signed distance to an ellipse stretched along the travel axis, with a short soft tail
+float dropSD(vec2 q, vec2 c, vec2 ax, float r, float s){
+  vec2 rel = q - c;
+  vec2 l = vec2(dot(rel, ax), dot(rel, vec2(-ax.y, ax.x)));
+  float a = r*s, b = r/sqrt(s);
+  float de = (length(l/vec2(a, b)) - 1.)*min(a, b);
+  float dt = length(l + vec2(a*.9, 0.)) - r*.45;
+  float k = r*.9;
+  float h = clamp(.5 + .5*(dt - de)/k, 0., 1.);
+  return mix(dt, de, h) - k*h*(1. - h);
+}
+// bead height above the surface for a given inside depth
+float beadH(float D, float r){ float x = clamp(-D, 0., r); return sqrt(x*(2.*r - x)); }
+
+vec3 photoBefore(vec2 q, float grain){
+  return negative(texture(uImg, toUV(q)).rgb) + grain*.03;
+}
+// the colour film while it is shaken loose: slides, lags, beads up and flies off
+float sheetF(vec2 q, out vec2 qs){
+  float n = soft(q*1.3 + uSeed*.37);
+  vec2 side = vec2(-uShedDir.y, uShedDir.x);
+  qs = q - (uShedDir*(.25 + 1.5*n) + side*(n - .5)*.5)*uShedS - uSlosh;
+  float card = -sdRound(qs, vec2(uAsp*.5, .5), uRad);
+  float film = (fbm(qs*3.4 + uSeed*1.3) - uShedTh)*.35;
+  return min(card, film);
+}
+float lipThin(float F){ return smoothstep(0., .03, F)*exp(-max(F - .03, 0.)/.05); }
+
+// colour photo seen through a liquid-glass layer of thickness h and normal n
+vec3 shadeLiquid(vec2 qs, vec3 n, float h){
+  vec2 off = n.xy*(.07 + .06*h);
+  vec3 cr = vivid(texture(uImg, toUV(qs - off*.92)).rgb);
+  vec3 cg = vivid(texture(uImg, toUV(qs - off*1.05)).rgb);
+  vec3 cb = vivid(texture(uImg, toUV(qs - off*1.2)).rgb);
+  vec3 liquid = vec3(cr.r, cg.g, cb.b);
+  liquid = mix(liquid, liquid*vec3(.7, 1.05, 1.12) + PAINT*.1, h*.55);
+  float fres = pow(1. - n.z, 1.6);
+  liquid += fres*vec3(.75, .86, 1.)*1.1;
+  vec3 V = vec3(0, 0, 1);
+  liquid += pow(max(dot(reflect(-L1, n), V), 0.), 70.)*1.3;
+  liquid += pow(max(dot(reflect(-L2, n), V), 0.), 30.)*.35*vec3(.8, .9, 1.);
+  liquid += smoothstep(.0, .5, h)*(1. - smoothstep(.5, 1., h))*max(dot(n.xy, -L1.xy), 0.)*.18;
+  return liquid;
+}
+
+vec3 surfaceAt(vec2 q, vec3 paper){
+  float m = smoothstep(.002, -.002, sdRound(q, vec2(uAsp*.5, .5), uRad));
+  return mix(paper, photoBefore(q, 0.), m);
+}
+
+void main(){
+  vec2 q = (gl_FragCoord.xy - uCenter)/uPH;
+  vec2 hb = vec2(uAsp*.5, .5);
+  float px = 1./uPH;
+  float tau = uT - uFly;
+  float grain = hash(gl_FragCoord.xy + uGrain) - .5;
+  vec3 paper = uBg + grain*.006;
+
+  float sd = sdRound(q, hb, uRad);
+  float mask = smoothstep(px, -px, sd);
+
+  // ---- photo + liquid ----
+  vec3 photo = photoBefore(q, grain);
+  float R = 0., amp = 0.;
+  if (tau > 0.){
+    float splat = .11*(1. - exp(-tau*20.));
+    float flow  = 1.05*(1. - pow(1. - clamp(tau/3.8, 0., 1.), 1.6));
+    float fill  = smoothstep(3.2, 4.4, tau)*.8;
+    R = splat + flow + fill;
+    amp = min(R, .3);
+  }
+  if ((tau > 0. || uDrain > 0.) && uShed < .5){
+    float e = 1.5*px;
+    float F  = body(q, R, amp, tau);
+    float Fx = body(q + vec2(e, 0.), R, amp, tau);
+    float Fy = body(q + vec2(0., e), R, amp, tau);
+    float h = lip(F);
+    vec2 gh = vec2(lip(Fx) - h, lip(Fy) - h)/e;
+    vec3 n = normalize(vec3(-gh*.03, 1.));
+    float wet = smoothstep(-px, px, F);
+
+    vec3 liquid = shadeLiquid(q, n, h);
+
+    // soft contact shadow cast ahead of the front
+    float Fs = body(q + vec2(-.007, .011), R, amp, tau);
+    float shade = lip(Fs)*(1. - wet)*.22;
+    photo = mix(photo*(1. - shade), liquid, wet);
+  }
+  vec3 col = mix(paper, photo, mask);
+
+  // ---- shaken off: the colour film lags, beads up and flies past the card edge ----
+  if (uShed > .5){
+    float e = 1.5*px;
+    vec2 qs, qx, qy, qd;
+    float G  = sheetF(q, qs);
+    float Gx = sheetF(q + vec2(e, 0.), qx);
+    float Gy = sheetF(q + vec2(0., e), qy);
+    float h = lipThin(G);
+    vec2 gh = vec2(lipThin(Gx) - h, lipThin(Gy) - h)/e;
+    vec3 n = normalize(vec3(-gh*.02, 1.));
+    float wet = smoothstep(-px, px, G);
+    float shade = lipThin(sheetF(q + vec2(-.007, .011), qd))*(1. - wet)*.3;
+    col = mix(col*(1. - shade), shadeLiquid(qs, n, h), wet);
+  }
+
+  // ---- the thrown drop: blue glass bead with its shadow and caustic ----
+  if (uT > 0. && tau < .09){
+    float k = clamp(uT/uFly, 0., 1.);
+    vec2 c = flyPos(uT);
+    vec2 v = (c - flyPos(uT - .016))/.016;
+    float sp = length(v);
+    vec2 ax = sp > 1e-3 ? v/sp : vec2(0., 1.);
+    float imp = smoothstep(0., .09, tau);                    // impact: flatten and hand over to the puddle
+    float jig = sin(uT*38.)*exp(-uT*5.)*.12;
+    float s = mix(1. + min(sp*.1, .4) + jig, .55, imp);
+    float r = .05*(.72 + .38*sin(k*3.14159))*(1. + imp*.8);  // swells as it rises toward the viewer
+    float lift = sin(k*3.14159)*(1. - imp);
+
+    // soft shadow on the surface, with the light the bead focuses into it
+    vec2 sc = c + vec2(.03, -.045)*(.25 + lift);
+    float sdist = length((q - sc)/vec2(1.15, 1.))/(r*(1. + .7*lift));
+    col *= 1. - (1. - smoothstep(.2, 1.25, sdist))*(.32 - .12*lift)*(1. - imp);
+    float caus = exp(-pow(length(q - sc + vec2(.012, -.016)*(.4 + lift))/(r*.32), 2.));
+    col += vec3(.3, .9, 1.)*caus*.5*(1. - imp);
+
+    // the bead: refracts what is under it, blue deepens with thickness
+    float e = 1.5*px;
+    float D  = dropSD(q, c, ax, r, s);
+    float h0 = beadH(D, r);
+    float hx = beadH(dropSD(q + vec2(e, 0.), c, ax, r, s), r);
+    float hy = beadH(dropSD(q + vec2(0., e), c, ax, r, s), r);
+    vec3 n = normalize(vec3(-(hx - h0)/e, -(hy - h0)/e, 1.));
+    float th = h0/r;
+    vec2 off = n.xy*r*1.6;
+    vec3 g = vec3(surfaceAt(q - off*.9, paper).r, surfaceAt(q - off, paper).g, surfaceAt(q - off*1.14, paper).b);
+    // clear in the middle, deeper blue toward the rim where the light travels further
+    g *= exp(-(1. - PAINT)*(.55 + 1.6*pow(1. - th, 2.))*1.25);
+    g += PAINT*.22*th;                                  // the bead glows a little from within
+    g = mix(g, PAINT*.3, pow(1. - n.z, 3.)*.55);
+    vec3 V = vec3(0, 0, 1);
+    g += smoothstep(.86, .93, dot(n, normalize(vec3(-.42, .5, .76))))*.55;          // softbox reflection
+    g += pow(max(dot(reflect(-L1, n), V), 0.), 220.)*2.;                              // sharp glint
+    g += pow(max(dot(n.xy, -L1.xy), 0.), 1.5)*(1. - n.z)*vec3(.45, .95, 1.)*.9;        // light focused on the far side
+    col = mix(col, g, smoothstep(px, -px, D)*(1. - smoothstep(.6, 1., imp)));
+  }
+
+  outColor = vec4(col, 1.);
+}
+</script>
+
+<script>
+(() => {
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const SPEED = reduced ? 2.5 : 1;
+  const FLY = 0.5;
+  const DONE = 4.6;
+  const RADIUS = 40;
+  const BG = [14 / 255, 15 / 255, 19 / 255];
+  const FOCUS_X = 0.56;  // keep the figure in frame when the sides get cropped
+
+  const device = document.getElementById('device');
+  const canvas = document.getElementById('gl');
+  const btn = document.getElementById('pour');
+
+  const gl = canvas.getContext('webgl2', { antialias: false });
+  if (!gl) { document.getElementById('fallback').hidden = false; btn.hidden = true; return; }
+
+  const sh = (type, src) => {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src.trim());
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    return s;
+  };
+  const prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, document.getElementById('vs').textContent));
+  gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, document.getElementById('fs').textContent));
+  gl.linkProgram(prog);
+  gl.useProgram(prog);
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+  const aPos = gl.getAttribLocation(prog, 'aPos');
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+  const U = {};
+  ['uImg','uCenter','uPH','uAsp','uRad','uBtn','uHit','uT','uFly','uDrain','uSeed','uGrain','uImgAsp','uFocusX','uBg','uShed','uShedS','uShedTh','uShedDir','uSlosh'].forEach(n => U[n] = gl.getUniformLocation(prog, n));
+
+  let imgAsp = 1;
+  const tex = gl.createTexture();
+  const img = new Image();
+  img.onload = () => {
+    imgAsp = img.naturalWidth / img.naturalHeight;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, img);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  };
+  img.src = 'data:image/jpeg;base64,__IMG__';
+
+  // ---- layout, in screen points: photo card fills the space above the button ----
+  const probe = document.createElement('div');
+  probe.style.cssText = 'position:fixed;visibility:hidden;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)';
+  document.body.appendChild(probe);
+  const BTN_H = 56, SIDE = 16;
+  let L = { W: 390, H: 844, cx: 0, cy: 0, w: 1, h: 1, bx: 0, by: 0 };
+  let scale = 1, mobile = false;
+  function layout() {
+    mobile = innerWidth < 520;
+    document.body.classList.toggle('mobile', mobile);
+    let W = 390, H = 844, top = 62, bottom = 34;
+    if (mobile) {
+      const cs = getComputedStyle(probe);
+      W = innerWidth; H = innerHeight;
+      top = 16 + parseFloat(cs.paddingTop); bottom = 20 + parseFloat(cs.paddingBottom);
+      device.style.width = W + 'px'; device.style.height = H + 'px';
+    } else {
+      device.style.width = W + 'px'; device.style.height = H + 'px';
+      scale = Math.min(1, (innerHeight - 56) / H, (innerWidth - 56) / W);
+    }
+    const btnTop = H - bottom - BTN_H;
+    btn.style.top = btnTop + 'px';
+    const cardTop = top, cardBottom = btnTop - 16;
+    L = { W, H, cx: W / 2, cy: (cardTop + cardBottom) / 2, w: W - SIDE * 2, h: cardBottom - cardTop, bx: W / 2, by: btnTop + BTN_H / 2 };
+    if (mobile) scale = 1;
+    placeDevice(0, 0, 0);
+    const dpr = Math.min(devicePixelRatio || 1, 2);
+    canvas.width = Math.round(W * scale * dpr);
+    canvas.height = Math.round(H * scale * dpr);
+  }
+  function placeDevice(x, y, r) {
+    device.style.transform = mobile
+      ? `translate(${x}px, ${y}px) rotate(${r}deg)`
+      : `translate(-50%, -50%) translate(${x}px, ${y}px) rotate(${r}deg) scale(${scale})`;
+  }
+  addEventListener('resize', layout);
+  layout();
+
+  // ---- state ----
+  const clock = () => performance.now() / 1000;
+  const smooth = (a, b, x) => { const k = Math.min(1, Math.max(0, (x - a) / (b - a))); return k * k * (3 - 2 * k); };
+  const buzz = ms => { try { navigator.vibrate && navigator.vibrate(ms); } catch (e) {} };
+  let start = null;          // time of the throw
+  let shedFrom = null;       // time the shake-off began
+  let replayAt = null;
+  let seed = 3.7, hit = [0.03, -0.06], dir = [1, 0];
+  let impactBuzzed = false;
+  const slosh = { x: 0, y: 0, vx: 0, vy: 0 };
+  let last = clock();
+
+  function throwPaint() {
+    seed = Math.random() * 40 + 1;
+    hit = [(Math.random() - 0.5) * 0.12, -0.02 + (Math.random() - 0.5) * 0.12];
+    start = clock();
+    impactBuzzed = false;
+    btn.disabled = true;
+    btn.classList.add('kick');
+    setTimeout(() => btn.classList.remove('kick'), 160);
+    buzz(12);
+  }
+  function shakeOff() {
+    shedFrom = clock();
+    const sx = Math.random() < 0.5 ? -1 : 1;
+    const len = Math.hypot(0.85, 0.55);
+    dir = [sx * 0.85 / len, -0.55 / len];
+    btn.disabled = true;
+    buzz([90, 40, 120, 40, 160]);
+  }
+  btn.addEventListener('click', () => {
+    if (start === null && shedFrom === null) throwPaint();
+    else if (shedFrom === null) shakeOff();
+  });
+
+  // phone motion: a light haptic tick on throw and impact, a hard shake on Continue
+  function phoneMotion(now, t) {
+    let x = 0, y = 0, r = 0;
+    if (!reduced && start !== null && shedFrom === null) {
+      const press = 1 - smooth(0, 0.09, t);
+      const tau = t - FLY;
+      const hit = tau > 0 ? Math.exp(-tau * 11) : 0;
+      const a = press * 0.9 + hit * 2.6;
+      x += a * (Math.sin(now * 157) + 0.5 * Math.sin(now * 263));
+      y += a * 0.8 * Math.cos(now * 191);
+      r += a * 0.12 * Math.sin(now * 131);
+    }
+    if (shedFrom !== null) {
+      const ts = now - shedFrom;
+      const k = reduced ? 0.25 : 1;
+      const env = smooth(0, 0.05, ts) * (1 - smooth(0.5, 1.05, ts));
+      x += k * env * (13 * Math.sin(ts * 47) + 5 * Math.sin(ts * 83 + 1.3));
+      y += k * env * (7 * Math.sin(ts * 59 + 0.7) + 3 * Math.sin(ts * 101));
+      r += k * env * 2.2 * Math.sin(ts * 41 + 0.4);
+      // a last jerk against the fling direction sends the paint off
+      const jerk = Math.max(0, Math.sin(Math.PI * Math.min(1, Math.max(0, (ts - 0.38) / 0.22))));
+      x -= k * jerk * dir[0] * 20;
+      y += k * jerk * dir[1] * 20;
+    }
+    return { x, y, r };
+  }
+
+  function frame() {
+    const now = clock();
+    const dt = Math.min(0.05, now - last); last = now;
+    let t = start === null ? -1 : (now - start) * SPEED;
+
+    if (replayAt !== null && now >= replayAt) { replayAt = null; throwPaint(); t = 0; }
+    if (start !== null && shedFrom === null && t > DONE && btn.disabled) {
+      btn.disabled = false;
+      btn.textContent = 'Continue';
+    }
+    if (start !== null && !impactBuzzed && t > FLY) { impactBuzzed = true; buzz(30); }
+
+    let shed = 0, shedS = 0, shedTh = -1;
+    if (shedFrom !== null) {
+      const ts = (now - shedFrom) * SPEED;
+      const p = Math.min(1, Math.max(0, (ts - 0.4) / 1.7));
+      shed = 1;
+      shedS = 1.7 * Math.pow(p, 2.3);
+      shedTh = -0.35 + 1.2 * Math.pow(p, 0.55);   // tears into beads early, stops short of dissolving them
+      if (ts > 2.2) { shedFrom = null; start = null; t = -1; shed = 0; replayAt = now + 0.4; }
+    }
+
+    const m = phoneMotion(now, t);
+    placeDevice(m.x, m.y, m.r);
+
+    // the film lags behind the phone like a liquid on a spring
+    const tx = -m.x * 1.6 / L.h, ty = m.y * 1.6 / L.h;
+    slosh.vx += ((tx - slosh.x) * 220 - slosh.vx * 12) * dt;
+    slosh.vy += ((ty - slosh.y) * 220 - slosh.vy * 12) * dt;
+    slosh.x += slosh.vx * dt; slosh.y += slosh.vy * dt;
+
+    const k = canvas.width / L.W;   // device px per screen point
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.uniform1i(U.uImg, 0);
+    gl.uniform2f(U.uCenter, L.cx * k, (L.H - L.cy) * k);
+    gl.uniform1f(U.uPH, L.h * k);
+    gl.uniform1f(U.uAsp, L.w / L.h);
+    gl.uniform1f(U.uImgAsp, imgAsp);
+    gl.uniform1f(U.uFocusX, FOCUS_X);
+    gl.uniform3f(U.uBg, BG[0], BG[1], BG[2]);
+    gl.uniform1f(U.uRad, RADIUS / L.h);
+    gl.uniform2f(U.uBtn, (L.bx - L.cx) / L.h, -(L.by - L.cy) / L.h);
+    gl.uniform2f(U.uHit, hit[0], hit[1]);
+    gl.uniform1f(U.uT, t);
+    gl.uniform1f(U.uFly, FLY);
+    gl.uniform1f(U.uDrain, 0);
+    gl.uniform1f(U.uSeed, seed);
+    gl.uniform1f(U.uGrain, Math.floor(now * 24) % 97);
+    gl.uniform1f(U.uShed, shed);
+    gl.uniform1f(U.uShedS, shedS);
+    gl.uniform1f(U.uShedTh, shedTh);
+    gl.uniform2f(U.uShedDir, dir[0], dir[1]);
+    gl.uniform2f(U.uSlosh, shed ? slosh.x : 0, shed ? slosh.y : 0);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
